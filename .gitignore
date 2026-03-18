@@ -1,0 +1,5 @@
+node_modules/
+cortex.config.json
+.env
+*.log
+vendor/axon/__pycache__/

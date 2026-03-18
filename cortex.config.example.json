@@ -1,0 +1,143 @@
+{
+  "_readme": "Copy this file to cortex.config.json and fill in your values. cortex.config.json is gitignored.",
+
+  "database": {
+    "_comment": "PostgreSQL connection for the cortex schema. This is where code_chunks, graph_edges, and health_snapshots are stored.",
+    "host": "localhost",
+    "port": 5432,
+    "database": "postgres",
+    "user": "postgres",
+    "password": "your-password-here",
+    "ssl": false,
+    "max": 10,
+    "idleTimeoutMillis": 30000,
+    "connectionTimeoutMillis": 5000
+  },
+
+  "ollama": {
+    "_comment": "Ollama for generating embeddings. Set enabled:false to skip embedding generation (chunks still stored as text).",
+    "enabled": true,
+    "host": "http://localhost:11434",
+    "model": "nomic-embed-text",
+    "dimensions": 768,
+    "timeoutMs": 30000
+  },
+
+  "scan": {
+    "_comment": "Global scan settings applied to all repos unless overridden per-repo.",
+    "concurrency": 4,
+    "chunkSizeLines": 80,
+    "chunkOverlapLines": 5,
+    "embedChunks": true,
+    "hashAlgorithm": "md5",
+    "ignorePatterns": [
+      "node_modules/**",
+      ".git/**",
+      "dist/**",
+      "build/**",
+      ".next/**",
+      "coverage/**",
+      "*.min.js",
+      "*.min.css",
+      "*.map",
+      "*.lock",
+      "*.log",
+      "vendor/**"
+    ],
+    "includeExtensions": [
+      ".js", ".mjs", ".cjs",
+      ".ts", ".tsx",
+      ".py",
+      ".go",
+      ".rb",
+      ".java",
+      ".rs",
+      ".sql",
+      ".md",
+      ".json",
+      ".yaml", ".yml",
+      ".toml",
+      ".sh", ".bash"
+    ]
+  },
+
+  "health": {
+    "_comment": "Cron schedule for automated health checks. Uses node-cron syntax.",
+    "schedule": "*/15 * * * *",
+    "timeoutMs": 5000,
+    "retries": 2
+  },
+
+  "context": {
+    "_comment": "Settings for CLAUDE.md generation.",
+    "outputFileName": "CLAUDE.md",
+    "maxChunksInSummary": 20,
+    "maxRoutesListed": 50,
+    "maxTablesListed": 30,
+    "includeGraphSummary": true,
+    "includeHealthSummary": true
+  },
+
+  "server": {
+    "_comment": "HTTP API server settings.",
+    "port": 3131,
+    "host": "localhost",
+    "apiKey": "your-api-key-here"
+  },
+
+  "repos": [
+    {
+      "_comment": "Each repo entry is an independent project to scan. 'name' must be unique.",
+      "name": "my-api",
+      "path": "/absolute/path/to/my-api",
+      "description": "Main API server",
+      "language": "javascript",
+
+      "scan": {
+        "_comment": "Per-repo scan overrides. Inherits from global scan settings.",
+        "enabled": true,
+        "schedule": "0 */6 * * *",
+        "additionalIgnore": ["tmp/**", "uploads/**"]
+      },
+
+      "services": {
+        "_comment": "Services this repo depends on. Used for health checks.",
+        "postgres": {
+          "type": "tcp",
+          "host": "localhost",
+          "port": 5432
+        },
+        "redis": {
+          "type": "tcp",
+          "host": "localhost",
+          "port": 6379
+        },
+        "api": {
+          "type": "http",
+          "url": "http://localhost:3000/api/health",
+          "expectedStatus": 200
+        }
+      },
+
+      "context": {
+        "_comment": "Where to write the generated CLAUDE.md file for this repo.",
+        "outputPath": "/absolute/path/to/my-api/CLAUDE.md"
+      },
+
+      "axon": {
+        "_comment": "Optional: use Axon Python backend for deeper AST-level analysis.",
+        "enabled": false,
+        "pythonBin": "python",
+        "scriptPath": "./vendor/axon/src/axon/cli.py"
+      }
+    },
+
+    {
+      "_comment": "Minimal example — only required fields.",
+      "name": "my-frontend",
+      "path": "/absolute/path/to/my-frontend",
+      "description": "React frontend application",
+      "language": "typescript"
+    }
+  ]
+}

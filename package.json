@@ -1,0 +1,23 @@
+{
+  "name": "context-cortex",
+  "version": "0.1.0",
+  "description": "Autonomous code intelligence — scans repos, builds knowledge graphs, generates CLAUDE.md context files for Claude Code",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "setup": "node scripts/setup.js",
+    "scan": "node scripts/full-scan.js",
+    "reset": "node scripts/reset.js",
+    "health": "node scripts/health-check.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "pg": "^8.13.0",
+    "chokidar": "^4.0.0",
+    "glob": "^11.0.0",
+    "node-cron": "^3.0.3",
+    "dotenv": "^16.4.0"
+  },
+  "engines": { "node": ">=18" }
+}

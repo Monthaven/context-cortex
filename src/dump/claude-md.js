@@ -313,6 +313,25 @@ async function getLastScanLog(repoName) {
   );
 }
 
+async function getRecentDecisions(limit = 10) {
+  return queryRows(`
+    SELECT id, title, decision, reasoning, created_at
+    FROM cortex.decisions
+    WHERE superseded_by IS NULL
+    ORDER BY created_at DESC LIMIT $1
+  `, [limit]).catch(() => []);
+}
+
+async function getActiveGotchas(limit = 15) {
+  return queryRows(`
+    SELECT id, title, severity, description, solution
+    FROM cortex.gotchas
+    WHERE resolved_at IS NULL
+    ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END,
+    created_at DESC LIMIT $1
+  `, [limit]).catch(() => []);
+}
+
 // ---------------------------------------------------------------------------
 // Markdown generation helpers
 // ---------------------------------------------------------------------------
@@ -359,6 +378,8 @@ export async function generateClaudeMd(repoConfig) {
     lastScan,
     recentWork,
     allWork,
+    decisions,
+    gotchas,
   ] = await Promise.all([
     getChunkStats(name),
     getTopFiles(name, contextCfg.maxChunksInSummary || 20),
@@ -373,6 +394,8 @@ export async function generateClaudeMd(repoConfig) {
     getLastScanLog(name),
     getCompactWorkLog(name, 7),
     getCompactWorkLog(null, 3),
+    getRecentDecisions(10),
+    getActiveGotchas(15),
   ]);
 
   const lines = [];
@@ -408,6 +431,39 @@ export async function generateClaudeMd(repoConfig) {
   lines.push('');
 
   // ---------------------------------------------------------------------------
+  // MCP Tools & Behavioral Rules
+  // ---------------------------------------------------------------------------
+  lines.push('## Context Cortex Tools');
+  lines.push('');
+  lines.push('If Context Cortex MCP tools are available, use them instead of curl commands.');
+  lines.push('');
+  lines.push('### Available Tools');
+  lines.push('| Tool | Purpose |');
+  lines.push('|------|---------|');
+  lines.push('| `cortex_search` | Semantic code search (prefer over grep/find for concept queries) |');
+  lines.push('| `cortex_file_context` | Get file summaries + related decisions/gotchas before editing |');
+  lines.push('| `cortex_system_status` | System health, embedding coverage, error counts |');
+  lines.push('| `cortex_session_start` | Start of every work session (required) |');
+  lines.push('| `cortex_session_end` | End of every work session |');
+  lines.push('| `cortex_log_work` | Log significant changes |');
+  lines.push('| `cortex_recent_work` | Recent work history as markdown |');
+  lines.push('| `cortex_log_decision` | Record architectural decisions |');
+  lines.push('| `cortex_log_gotcha` | Record traps and edge cases |');
+  lines.push('| `cortex_get_decisions` | Review past decisions |');
+  lines.push('| `cortex_get_gotchas` | Check known traps |');
+  lines.push('| `cortex_resolve_gotcha` | Mark a gotcha as fixed |');
+  lines.push('');
+  lines.push('### Behavioral Rules');
+  lines.push('');
+  lines.push('1. **Session tracking:** ALWAYS call `cortex_session_start` at the beginning of work and `cortex_session_end` when done.');
+  lines.push('2. **Before editing:** Call `cortex_file_context` with the file paths you plan to modify. Check for related decisions and gotchas.');
+  lines.push('3. **Decisions:** When choosing between approaches, call `cortex_log_decision` with title, decision, reasoning, and affected paths.');
+  lines.push('4. **Gotchas:** When discovering traps or edge cases, call `cortex_log_gotcha` immediately.');
+  lines.push('5. **Search:** Prefer `cortex_search` over grep/find when searching by concept or meaning.');
+  lines.push('6. **Work logging:** Call `cortex_log_work` after completing significant changes.');
+  lines.push('');
+
+  // ---------------------------------------------------------------------------
   // Recent Work
   // ---------------------------------------------------------------------------
   lines.push(`## Recent Work — ${name} (last 7 days)`);
@@ -417,6 +473,38 @@ export async function generateClaudeMd(repoConfig) {
   lines.push('## System-Wide Recent Work (last 3 days)');
   lines.push(allWork);
   lines.push('');
+
+  // ---------------------------------------------------------------------------
+  // Recent Decisions
+  // ---------------------------------------------------------------------------
+  if (decisions.length > 0) {
+    lines.push('## Recent Decisions');
+    lines.push('');
+    lines.push('| # | Decision | Reasoning | Date |');
+    lines.push('|---|----------|-----------|------|');
+    for (const d of decisions) {
+      const date = new Date(d.created_at).toISOString().slice(0, 10);
+      const reasoning = d.reasoning ? d.reasoning.replace(/\|/g, '/').replace(/\n/g, ' ').slice(0, 80) : '—';
+      const title = d.title.replace(/\|/g, '/');
+      lines.push(`| ${d.id} | **${title}**: ${d.decision.replace(/\|/g, '/').replace(/\n/g, ' ').slice(0, 100)} | ${reasoning} | ${date} |`);
+    }
+    lines.push('');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Active Gotchas
+  // ---------------------------------------------------------------------------
+  if (gotchas.length > 0) {
+    lines.push('## Active Gotchas');
+    lines.push('');
+    for (const g of gotchas) {
+      const icon = g.severity === 'critical' ? '**CRITICAL**' : g.severity === 'warning' ? '**WARNING**' : 'info';
+      lines.push(`### [${icon}] ${g.title}`);
+      lines.push(`- **Problem:** ${g.description}`);
+      if (g.solution) lines.push(`- **Solution:** ${g.solution}`);
+      lines.push('');
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Scan summary

@@ -1,21 +1,33 @@
 {
   "_readme": [
-    "Add the 'context-cortex' block to your .mcp.json or Claude Code settings.",
-    "Adjust env vars to match your cortex database connection.",
-    "If cortex uses cortex.config.json, just ensure it exists in S:/context-cortex/ —",
-    "the MCP server reads it automatically. Env vars override the config file."
+    "Context Cortex MCP configuration for Claude Code.",
+    "",
+    "WHERE TO PLACE THIS:",
+    "  Option A (project-level): Save as .mcp.json in your project root.",
+    "  Option B (global): Merge the 'mcpServers' block into ~/.claude/settings.json.",
+    "",
+    "AFTER ADDING:",
+    "  1. Restart Claude Code (or run /mcp to reload MCP servers).",
+    "  2. Verify by asking Claude Code to run cortex_system_status.",
+    "",
+    "CONFIGURATION:",
+    "  - Replace /path/to/context-cortex with the actual install path.",
+    "  - On Windows, use forward slashes: C:/tools/context-cortex/mcp-server.js",
+    "  - Adjust CORTEX_DB_* env vars to match your PostgreSQL connection.",
+    "  - CORTEX_CONFIG points to cortex.config.json (optional if env vars are set)."
   ],
   "mcpServers": {
     "context-cortex": {
       "command": "node",
-      "args": ["S:/context-cortex/mcp-server.js"],
+      "args": ["/path/to/context-cortex/mcp-server.js"],
       "env": {
         "CORTEX_DB_HOST": "localhost",
         "CORTEX_DB_PORT": "5432",
-        "CORTEX_DB_NAME": "sona",
-        "CORTEX_DB_USER": "sona",
-        "CORTEX_DB_PASSWORD": "${SONA_DB_PASSWORD}",
-        "CORTEX_OLLAMA_HOST": "http://localhost:11434"
+        "CORTEX_DB_NAME": "postgres",
+        "CORTEX_DB_USER": "postgres",
+        "CORTEX_DB_PASSWORD": "",
+        "CORTEX_OLLAMA_HOST": "http://localhost:11434",
+        "CORTEX_CONFIG": "/path/to/context-cortex/cortex.config.json"
       }
     }
   }

@@ -39,18 +39,94 @@ git clone https://github.com/context-cortex/context-cortex
 cd context-cortex
 npm install
 
-# 2. Configure
-cp cortex.config.example.json cortex.config.json
-# Edit cortex.config.json — set database credentials and repo paths
+# 2. Interactive setup (generates config, creates schema, runs first scan)
+npm run init
 
-# 3. First-time setup (creates schema, scans repos, builds graph, generates CLAUDE.md)
-npm run setup
-
-# 4. Start the server (file watcher + API + cron jobs)
+# 3. Start the server
 npm start
+
+# 4. Connect to Claude Code
+npm run add-to-claude -- /path/to/your/project
+# Then restart Claude Code
 ```
 
 The API is now available at `http://localhost:3131` (default port).
+
+### Manual Configuration (Alternative)
+
+If you prefer to configure manually instead of using `npm run init`:
+
+```bash
+cp cortex.config.example.json cortex.config.json
+# Edit cortex.config.json — set database credentials and repo paths
+npm run setup
+```
+
+## Claude Code Integration
+
+Context Cortex works as an MCP (Model Context Protocol) server that gives Claude Code 12 native tools.
+
+### Step 1: Add MCP Config
+
+Create a `.mcp.json` file in your project root (or add to an existing one):
+
+```json
+{
+  "mcpServers": {
+    "context-cortex": {
+      "command": "node",
+      "args": ["/path/to/context-cortex/mcp-server.js"],
+      "env": {
+        "CORTEX_CONFIG": "/path/to/context-cortex/cortex.config.json"
+      }
+    }
+  }
+}
+```
+
+Replace `/path/to/context-cortex` with the actual install path. On Windows, use forward slashes: `C:/tools/context-cortex/mcp-server.js`.
+
+Alternatively, add to your global Claude Code settings at `~/.claude/settings.json`.
+
+### Step 2: Restart Claude Code
+
+Close and reopen Claude Code (or run `/mcp` to reload MCP servers).
+
+### Step 3: Verify
+
+Ask Claude Code to run `cortex_system_status`. If it returns chunk counts and health data, the MCP server is connected.
+
+### Available MCP Tools
+
+| Tool | When to Use |
+|------|-------------|
+| `cortex_search` | Finding code by meaning (replaces grep for semantic queries) |
+| `cortex_file_context` | Before editing files -- get summaries, related decisions, gotchas |
+| `cortex_system_status` | Check system health, embedding coverage, error counts |
+| `cortex_session_start` | Beginning of every work session |
+| `cortex_session_end` | End of every work session |
+| `cortex_log_work` | After significant changes |
+| `cortex_recent_work` | See what happened in recent sessions |
+| `cortex_log_decision` | When making architectural choices |
+| `cortex_log_gotcha` | When discovering traps or edge cases |
+| `cortex_get_decisions` | Review past architectural decisions |
+| `cortex_get_gotchas` | Check known traps before working on code |
+| `cortex_resolve_gotcha` | When a known issue has been fixed |
+
+### Prerequisites
+
+Before first use, ensure these are set up:
+
+```bash
+# 1. Pull the embedding model
+ollama pull nomic-embed-text
+
+# 2. Enable pgvector in your database
+psql -d your_database -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# 3. Create the database (if not using an existing one)
+createdb cortex
+```
 
 ## Requirements
 
@@ -61,6 +137,25 @@ The API is now available at `http://localhost:3131` (default port).
 | [Ollama](https://ollama.ai) | Any | Embedding generation (`nomic-embed-text`) |
 
 pgvector is strongly recommended but optional. Without it, embeddings are stored as TEXT and vector similarity search is unavailable (full-text search still works).
+
+### Installing pgvector
+
+```bash
+# Ubuntu/Debian
+sudo apt install postgresql-16-pgvector
+
+# macOS (Homebrew)
+brew install pgvector
+
+# Then enable in your database:
+psql -d your_database -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+### Pulling the Embedding Model
+
+```bash
+ollama pull nomic-embed-text
+```
 
 ## Configuration
 

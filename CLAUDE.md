@@ -612,6 +612,44 @@ curl -X POST http://localhost:3131/dump/my-api
 
 ---
 
+## Setting Up Context Cortex for a New Project
+
+When a user asks you to set up Context Cortex for their project, follow these steps:
+
+1. **Detect the project**: Run `ls` to see the project structure. Note the language, entry points, and any services (databases, APIs).
+
+2. **Check prerequisites**:
+   - PostgreSQL running? `psql -c "SELECT 1"` or check with `pg_isready`
+   - pgvector installed? `psql -c "CREATE EXTENSION IF NOT EXISTS vector;"`
+   - Ollama running? `curl -s http://localhost:11434/api/tags`
+   - Model pulled? `ollama pull nomic-embed-text`
+
+3. **Generate config**: Create `cortex.config.json` in the context-cortex directory with:
+   - Database connection details
+   - The user's repo(s) with path, name, language, entry points
+   - Any services to monitor
+
+4. **Run setup**: `cd /path/to/context-cortex && npm run setup`
+
+5. **Add MCP server**: Create `.mcp.json` in the user's project root:
+   ```json
+   {
+     "mcpServers": {
+       "context-cortex": {
+         "command": "node",
+         "args": ["/path/to/context-cortex/mcp-server.js"],
+         "env": { "CORTEX_CONFIG": "/path/to/context-cortex/cortex.config.json" }
+       }
+     }
+   }
+   ```
+
+6. **Verify**: Tell the user to restart Claude Code, then call `cortex_system_status`.
+
+7. **Explain**: Tell the user what was set up and what happens automatically (file watching, cron scans, CLAUDE.md regeneration every 4 hours).
+
+---
+
 ## Services
 
 | Component | Default Port | Notes |

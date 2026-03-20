@@ -138,9 +138,20 @@ async function setup() {
 
   console.log('');
   if (allOk) {
-    console.log('Setup complete. Start the server with: npm start');
+    console.log('=== Setup Complete ===');
+    console.log('Next steps:');
+    console.log('1. Start the server: npm start');
+    console.log('2. Add MCP to Claude Code: npm run add-to-claude');
+    console.log('3. Restart Claude Code to connect');
+    console.log('4. Verify: ask Claude to run cortex_system_status');
   } else {
     console.log('Setup completed with errors. Review the output above.');
+    console.log('');
+    console.log('Once errors are resolved:');
+    console.log('1. Start the server: npm start');
+    console.log('2. Add MCP to Claude Code: npm run add-to-claude');
+    console.log('3. Restart Claude Code to connect');
+    console.log('4. Verify: ask Claude to run cortex_system_status');
   }
 
   await closePool();

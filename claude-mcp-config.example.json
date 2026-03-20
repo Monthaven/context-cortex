@@ -1,0 +1,22 @@
+{
+  "_readme": [
+    "Add the 'context-cortex' block to your .mcp.json or Claude Code settings.",
+    "Adjust env vars to match your cortex database connection.",
+    "If cortex uses cortex.config.json, just ensure it exists in S:/context-cortex/ —",
+    "the MCP server reads it automatically. Env vars override the config file."
+  ],
+  "mcpServers": {
+    "context-cortex": {
+      "command": "node",
+      "args": ["S:/context-cortex/mcp-server.js"],
+      "env": {
+        "CORTEX_DB_HOST": "localhost",
+        "CORTEX_DB_PORT": "5432",
+        "CORTEX_DB_NAME": "sona",
+        "CORTEX_DB_USER": "sona",
+        "CORTEX_DB_PASSWORD": "${SONA_DB_PASSWORD}",
+        "CORTEX_OLLAMA_HOST": "http://localhost:11434"
+      }
+    }
+  }
+}

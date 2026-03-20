@@ -243,3 +243,50 @@ CREATE INDEX IF NOT EXISTS work_log_category_idx
 CREATE UNIQUE INDEX IF NOT EXISTS work_log_commit_hash_idx
     ON cortex.work_log (commit_hash)
     WHERE commit_hash IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- 8. decisions
+-- Architectural and design decisions logged by Claude Code sessions.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS cortex.decisions (
+    id              SERIAL PRIMARY KEY,
+    title           TEXT        NOT NULL,
+    decision        TEXT        NOT NULL,
+    reasoning       TEXT,
+    affected_paths  TEXT[]      DEFAULT '{}',
+    tags            TEXT[]      DEFAULT '{}',
+    superseded_by   INTEGER     REFERENCES cortex.decisions(id),
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS decisions_created_at_idx
+    ON cortex.decisions (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS decisions_title_fts_idx
+    ON cortex.decisions USING GIN (to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(decision, '')));
+
+-- ---------------------------------------------------------------------------
+-- 9. gotchas
+-- Traps, edge cases, and unexpected behaviors discovered during work.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS cortex.gotchas (
+    id              SERIAL PRIMARY KEY,
+    title           TEXT        NOT NULL,
+    description     TEXT        NOT NULL,
+    solution        TEXT,
+    severity        TEXT        DEFAULT 'warning', -- 'critical', 'warning', 'info'
+    affected_paths  TEXT[]      DEFAULT '{}',
+    resolved_at     TIMESTAMPTZ,
+    resolution      TEXT,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS gotchas_created_at_idx
+    ON cortex.gotchas (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS gotchas_severity_idx
+    ON cortex.gotchas (severity);
+
+CREATE INDEX IF NOT EXISTS gotchas_resolved_idx
+    ON cortex.gotchas (resolved_at)
+    WHERE resolved_at IS NULL;

@@ -2,6 +2,22 @@
 
 Code intelligence layer for Claude Code. Scans your repos, builds a searchable code graph, tracks work history, and generates `CLAUDE.md` context files so every AI coding session starts informed.
 
+## Why
+
+Without Context Cortex, every Claude Code session starts cold:
+- You manually write and maintain CLAUDE.md files
+- Claude has no memory of what happened in prior sessions
+- You grep/find to search code instead of semantic search
+- Architectural decisions live in your head, not in a queryable database
+- You don't know which services are up or down
+
+With Context Cortex:
+- CLAUDE.md is auto-generated with fresh code stats, work history, and health data
+- Every git commit is automatically logged
+- Sessions are tracked with start/end boundaries
+- Decisions and gotchas persist across sessions
+- Semantic search finds code by meaning, not just keywords
+
 ## What It Does
 
 Point Context Cortex at any codebase and it will:
@@ -120,6 +136,29 @@ Each repo in the `repos` array supports:
 
 Per-repo `scan` settings merge with (and override) global `scan` defaults. `additionalIgnore` patterns are appended to the global ignore list rather than replacing it.
 
+#### `entryPoints`
+
+Array of file paths (relative to repo root) that serve as main entry points for the application. These are rendered in the generated CLAUDE.md under "Entry Points" so Claude Code knows where to start reading.
+
+```json
+{
+  "entryPoints": ["src/core/server.js", "src/core/brain.js", "quantum/app/main.py"]
+}
+```
+
+#### `databases`
+
+Array of database connection descriptions. Each object can have `name`, `host`, `port`, `database`, and `purpose`. These are rendered as a table in the generated CLAUDE.md under "Database Connections".
+
+```json
+{
+  "databases": [
+    { "name": "sona", "host": "localhost", "port": 5432, "database": "sona", "purpose": "Primary knowledge base" },
+    { "name": "cre", "host": "localhost", "port": 5433, "database": "cre_scraper", "purpose": "34.9M commercial properties" }
+  ]
+}
+```
+
 ### Environment Variables (Alternative)
 
 If `cortex.config.json` is not present, these environment variables are used:
@@ -232,6 +271,18 @@ Log a work entry.
 }
 ```
 
+#### `GET /work-log`
+Retrieve work log entries with filters.
+
+| Query Param | Description |
+|-------------|-------------|
+| `repo` | Filter by repo name |
+| `category` | Filter by category (`feature`, `fix`, `refactor`, `build`, `config`, `test`, `error`, `debug`, `deploy`, `change`) |
+| `status` | Filter by status (`completed`, `in_progress`, `failed`, `reverted`) |
+| `session_id` | Filter by session ID |
+| `since` | Time filter (e.g., `7d`, `24h`, or ISO date like `2026-03-18`) |
+| `limit` | Max results, up to 200 (default: 20) |
+
 #### `POST /work-log/session-start`
 Start a work session. Returns a `session_id`.
 
@@ -258,8 +309,8 @@ Semantic vector search (requires embeddings). Falls back to ILIKE if no embeddin
 #### `GET /ext/topology`
 Dependency graph visualization data — repos, databases, services, cross-repo edges.
 
-#### `GET /ext/context?paths=src/auth.js,src/db.js`
-Task-relevant context for specific files. Depth: `light` (default), `medium`, `deep`.
+#### `GET /ext/context?task=...` or `GET /ext/context?paths=src/auth.js,src/db.js`
+Task-relevant context. Accepts `task` (natural language search) or `paths` (comma-separated file paths). If both are provided, `paths` takes precedence. Depth: `light`, `medium` (default), `deep`.
 
 #### `GET /ext/errors`
 Error log with optional `?operation=` and `?repo=` filters.
@@ -369,7 +420,30 @@ Retries up to `health.retries` times (default: 2) with 500ms x attempt backoff. 
 
 Output path defaults to `{repo.path}/CLAUDE.md`. Override with `repos[].context.outputPath`.
 
+### Marker-Based Injection
+
+Context Cortex uses HTML comment markers to inject its generated content into an existing CLAUDE.md without overwriting your hand-written sections:
+
+```
+<!-- cortex-context-start -->
+<!-- Auto-injected by context-cortex. Regenerated every 4 hours or on demand. -->
+
+(auto-generated content here)
+
+<!-- cortex-context-end -->
+```
+
+**How it works:**
+
+- If `<!-- cortex-context-start -->` and `<!-- cortex-context-end -->` markers are found in the existing CLAUDE.md, only the content between them is replaced.
+- Any content you write **above** the start marker is preserved across regenerations.
+- If no markers exist (e.g., first run), the cortex section is appended to the end of the file.
+- The section is regenerated every 4 hours (via cron), on server startup, and on manual trigger (`POST /dump/claude-md`).
+- A standalone backup is also written to `.cortex.CLAUDE.md` alongside the primary file.
+
 ## Database Schema
+
+All DDL in `src/db/schema.sql` uses `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`, so `npm run setup` is safe to re-run at any time without data loss. Existing tables and indexes are left untouched; only missing objects are created.
 
 Seven tables in the `cortex` PostgreSQL schema:
 

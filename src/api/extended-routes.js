@@ -258,10 +258,12 @@ router.get('/ext/topology', requireAuth, asyncHandler(async (req, res) => {
   res.json({ success: true, nodes, edges });
 }));
 
-// ── GET /ext/context?task=&depth=light|medium|deep&repo= ─────────────────────
+// ── GET /ext/context?task=&paths=&depth=light|medium|deep&repo= ──────────────
+// Accepts `task` (natural language search) or `paths` (comma-separated file paths).
+// If both are provided, `paths` takes precedence.
 router.get('/ext/context', requireAuth, asyncHandler(async (req, res) => {
-  const { task, depth = 'medium', repo } = req.query;
-  if (!task) return res.status(400).json({ success: false, error: 'task is required' });
+  const { task, paths, depth = 'medium', repo } = req.query;
+  if (!task && !paths) return res.status(400).json({ success: false, error: 'task or paths is required' });
 
   const params = [];
   let repoFilter = '';
@@ -276,38 +278,17 @@ router.get('/ext/context', requireAuth, asyncHandler(async (req, res) => {
   let chunks = [];
   let searchType = 'text';
 
-  try {
-    const vec = await embedText(task);
-    const vecStr = `[${vec.join(',')}]`;
-    chunks = await queryRows(
-      `SELECT c.repo_name, c.relative_path, c.chunk_type, c.chunk_name,
-              c.start_line, c.end_line, c.language,
-              c.meta,
-              ${depth === 'deep' ? 'c.content' : 'LEFT(c.content, 800) as content'},
-              1 - (c.embedding <=> '${vecStr}'::vector(768)) as similarity
-       FROM cortex.code_chunks c
-       WHERE c.embedding IS NOT NULL ${repoFilter}
-       ORDER BY c.embedding <=> '${vecStr}'::vector(768)
-       LIMIT ${lim}`,
-      params
-    );
-    searchType = 'vector';
-  } catch {}
+  // If paths provided, fetch chunks by file path directly
+  if (paths) {
+    const pathList = paths.split(',').map(p => p.trim()).filter(Boolean);
+    searchType = 'paths';
 
-  if (chunks.length === 0) {
-    // Fallback to text search
-    const terms = task.split(/\s+/).filter(t => t.length > 3).slice(0, 3);
-    const textParams = [];
-    const ilikeConditions = terms.map(t => {
-      textParams.push(`%${t}%`);
-      return `c.content ILIKE $${textParams.length}`;
+    const pathParams = [...params];
+    const pathConditions = pathList.map(p => {
+      pathParams.push(`%${p}%`);
+      return `c.relative_path ILIKE $${pathParams.length}`;
     });
-    const ilike = ilikeConditions.length > 0 ? ilikeConditions.join(' OR ') : `c.content ILIKE $1`;
-    if (ilikeConditions.length === 0) textParams.push(`%${task}%`);
-    if (repo) {
-      textParams.push(repo);
-    }
-    const textRepoFilter = repo ? `AND c.repo_name = $${textParams.length}` : '';
+    const pathWhere = pathConditions.join(' OR ');
 
     chunks = await queryRows(
       `SELECT c.repo_name, c.relative_path, c.chunk_type, c.chunk_name,
@@ -315,11 +296,60 @@ router.get('/ext/context', requireAuth, asyncHandler(async (req, res) => {
               c.meta,
               ${depth === 'deep' ? 'c.content' : 'LEFT(c.content, 800) as content'}
        FROM cortex.code_chunks c
-       WHERE (${ilike}) ${textRepoFilter}
-       ORDER BY c.updated_at DESC
+       WHERE (${pathWhere}) ${repoFilter}
+       ORDER BY c.relative_path, c.start_line
        LIMIT ${lim}`,
-      textParams
+      pathParams
     );
+  }
+
+  // If no paths provided (or paths returned nothing), use task-based search
+  if (chunks.length === 0 && task) {
+    try {
+      const vec = await embedText(task);
+      const vecStr = `[${vec.join(',')}]`;
+      chunks = await queryRows(
+        `SELECT c.repo_name, c.relative_path, c.chunk_type, c.chunk_name,
+                c.start_line, c.end_line, c.language,
+                c.meta,
+                ${depth === 'deep' ? 'c.content' : 'LEFT(c.content, 800) as content'},
+                1 - (c.embedding <=> '${vecStr}'::vector(768)) as similarity
+         FROM cortex.code_chunks c
+         WHERE c.embedding IS NOT NULL ${repoFilter}
+         ORDER BY c.embedding <=> '${vecStr}'::vector(768)
+         LIMIT ${lim}`,
+        params
+      );
+      searchType = 'vector';
+    } catch {}
+
+    if (chunks.length === 0) {
+      // Fallback to text search
+      const terms = task.split(/\s+/).filter(t => t.length > 3).slice(0, 3);
+      const textParams = [];
+      const ilikeConditions = terms.map(t => {
+        textParams.push(`%${t}%`);
+        return `c.content ILIKE $${textParams.length}`;
+      });
+      const ilike = ilikeConditions.length > 0 ? ilikeConditions.join(' OR ') : `c.content ILIKE $1`;
+      if (ilikeConditions.length === 0) textParams.push(`%${task}%`);
+      if (repo) {
+        textParams.push(repo);
+      }
+      const textRepoFilter = repo ? `AND c.repo_name = $${textParams.length}` : '';
+
+      chunks = await queryRows(
+        `SELECT c.repo_name, c.relative_path, c.chunk_type, c.chunk_name,
+                c.start_line, c.end_line, c.language,
+                c.meta,
+                ${depth === 'deep' ? 'c.content' : 'LEFT(c.content, 800) as content'}
+         FROM cortex.code_chunks c
+         WHERE (${ilike}) ${textRepoFilter}
+         ORDER BY c.updated_at DESC
+         LIMIT ${lim}`,
+        textParams
+      );
+    }
   }
 
   // Get health snapshot (non-ok services)
@@ -352,7 +382,8 @@ router.get('/ext/context', requireAuth, asyncHandler(async (req, res) => {
   }
 
   // Build markdown
-  let md = `# Context: ${task}
+  const contextLabel = paths || task;
+  let md = `# Context: ${contextLabel}
 _Generated by context-cortex | depth: ${depth} | search: ${searchType} | ${new Date().toISOString()}_
 ${healthLines}
 
@@ -387,12 +418,13 @@ ${healthLines}
   }
 
   if (depth === 'deep') {
-    md += `\n## How to Use This Context\n1. The files above are ranked by semantic relevance to: "${task}"\n2. Check DB tables referenced — changes may need migrations\n3. Verify env vars are set in .env before running\n4. Fix TODOs as part of this task if relevant\n`;
+    md += `\n## How to Use This Context\n1. The files above are ranked by relevance to: "${contextLabel}"\n2. Check DB tables referenced — changes may need migrations\n3. Verify env vars are set in .env before running\n4. Fix TODOs as part of this task if relevant\n`;
   }
 
   res.json({
     success: true,
-    task,
+    task: task || null,
+    paths: paths || null,
     depth,
     searchType,
     chunkCount: chunks.length,

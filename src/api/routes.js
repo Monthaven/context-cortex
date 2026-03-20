@@ -12,7 +12,7 @@ import { queryRows, queryOne, query } from '../db/connection.js';
 import { runScan } from '../scan/index.js';
 import { buildGraph } from '../graph/builder.js';
 import { runHealthCheck, getLatestHealth } from '../check/snapshot.js';
-import { writeClaudeMd } from '../dump/claude-md.js';
+import { writeClaudeMd, dumpClaudeMd } from '../dump/claude-md.js';
 
 const router = Router();
 
@@ -389,6 +389,22 @@ router.post('/dump/:name', requireAuth, asyncHandler(async (req, res) => {
   res.json({
     repo: repoName,
     outputPath,
+    timestamp: new Date().toISOString(),
+  });
+}));
+
+// ---------------------------------------------------------------------------
+// POST /dump/claude-md
+// Generate and write CLAUDE.md for ALL repos (bulk dump)
+// ---------------------------------------------------------------------------
+
+router.post('/dump/claude-md', requireAuth, asyncHandler(async (req, res) => {
+  const { dryRun } = req.query;
+  const result = await dumpClaudeMd({ dryRun: dryRun === 'true' });
+
+  res.json({
+    written: result.written,
+    repos: Object.keys(result.content),
     timestamp: new Date().toISOString(),
   });
 }));

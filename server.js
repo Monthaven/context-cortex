@@ -3,8 +3,10 @@
  * Context Cortex — main entry point.
  *
  * Starts the Express HTTP API, initializes the DB pool, registers cron jobs
- * for periodic scans and health checks, and sets up chokidar file watchers
- * for incremental updates on each configured repo.
+ * for periodic scans and health checks, sets up chokidar file watchers
+ * for incremental updates, and runs background automation:
+ *   - Git commit watcher (60s poll) — logs to work_log + triggers incremental scan
+ *   - CLAUDE.md auto-dump (every 4 hours + on startup with 30s delay)
  *
  * Usage: node server.js
  */
@@ -13,12 +15,16 @@ import 'dotenv/config';
 import express from 'express';
 import cron from 'node-cron';
 import chokidar from 'chokidar';
+import { execFileSync } from 'child_process';
 import { getConfig } from './src/config.js';
 import { runSchema, closePool } from './src/db/connection.js';
 import apiRouter from './src/api/routes.js';
+import workLogRouter, { logWork } from './src/api/work-log-routes.js';
+import extendedRoutes from './src/api/extended-routes.js';
 import { runScan, scanFile } from './src/scan/index.js';
 import { buildGraph } from './src/graph/builder.js';
 import { runHealthCheck } from './src/check/snapshot.js';
+import { dumpClaudeMd } from './src/dump/claude-md.js';
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -50,6 +56,8 @@ app.use((req, res, next) => {
 
 // API routes
 app.use('/', apiRouter);
+app.use('/', workLogRouter);
+app.use('/', extendedRoutes);
 
 // 404 handler
 app.use((req, res) => {
@@ -165,6 +173,106 @@ function setupCrons() {
 }
 
 // ---------------------------------------------------------------------------
+// Git Commit Watcher (poll every 60s for each repo)
+// ---------------------------------------------------------------------------
+
+const _lastCommit = {};
+
+function inferCategory(msg = '') {
+  const m = msg.toLowerCase();
+  if (m.startsWith('fix') || m.startsWith('bug') || m.includes('hotfix')) return 'fix';
+  if (m.startsWith('feat') || m.startsWith('add ') || m.startsWith('new ')) return 'feature';
+  if (m.startsWith('refactor') || m.startsWith('rework')) return 'refactor';
+  if (m.startsWith('test') || m.startsWith('spec')) return 'test';
+  if (m.startsWith('chore') || m.startsWith('config')) return 'config';
+  if (m.startsWith('deploy') || m.startsWith('release')) return 'deploy';
+  if (m.startsWith('debug')) return 'debug';
+  if (m.startsWith('build') || m.startsWith('ci')) return 'build';
+  return 'build';
+}
+
+function setupGitWatcher() {
+  setInterval(async () => {
+    for (const repo of cfg.repos) {
+      try {
+        const head = execFileSync('git', ['-C', repo.path, 'rev-parse', 'HEAD'],
+          { encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
+
+        if (_lastCommit[repo.name] && _lastCommit[repo.name] !== head) {
+          // New commit detected
+          const subject = execFileSync('git', ['-C', repo.path, 'log', '-1', '--pretty=format:%s'],
+            { encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
+          const filesOut = execFileSync('git', ['-C', repo.path, 'diff-tree', '--no-commit-id', '-r', '--name-only', head],
+            { encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
+          const files = filesOut.split('\n').filter(Boolean).slice(0, 30);
+
+          const cat = inferCategory(subject);
+
+          logWork({
+            repo: repo.name,
+            category: cat,
+            summary: subject.slice(0, 300),
+            files_touched: files,
+            status: 'completed',
+            commit_hash: head.slice(0, 7),
+            tags: ['git-auto'],
+          });
+          console.log(`[cortex:git] ${repo.name}: new commit ${head.slice(0, 7)} — ${subject.slice(0, 80)}`);
+
+          // Auto-scan changed files — re-chunk + re-embed
+          if (files.length > 0) {
+            const fullPaths = files.map(f => repo.path.replace(/\\/g, '/') + '/' + f);
+            for (const fp of fullPaths) {
+              try {
+                await scanFile(repo, fp);
+              } catch {
+                // Non-critical — file may not match scan extensions
+              }
+            }
+            console.log(`[cortex:git] Re-scanned ${files.length} changed files in ${repo.name}`);
+          }
+        }
+        _lastCommit[repo.name] = head;
+      } catch {
+        // Repo may not be a git repo or path may not exist — skip silently
+      }
+    }
+  }, 60 * 1000);
+
+  console.log('[cortex:git] Git commit watcher started (60s poll)');
+}
+
+// ---------------------------------------------------------------------------
+// CLAUDE.md Auto-Dump (every 4 hours + on startup)
+// ---------------------------------------------------------------------------
+
+function setupClaudeMdAutoDump() {
+  const CLAUDE_DUMP_INTERVAL = 4 * 60 * 60 * 1000; // 4 hours
+
+  // Periodic refresh
+  setInterval(async () => {
+    try {
+      const result = await dumpClaudeMd();
+      console.log(`[cortex:dump] Auto-refreshed ${result.written.length} CLAUDE.md files`);
+    } catch (err) {
+      console.error(`[cortex:dump] Auto-refresh failed: ${err.message}`);
+    }
+  }, CLAUDE_DUMP_INTERVAL);
+
+  // Startup dump (30s delay for DB warmup)
+  setTimeout(async () => {
+    try {
+      const result = await dumpClaudeMd();
+      console.log(`[cortex:dump] Startup refresh: ${result.written.length} CLAUDE.md files`);
+    } catch (err) {
+      console.error(`[cortex:dump] Startup refresh failed: ${err.message}`);
+    }
+  }, 30 * 1000);
+
+  console.log('[cortex:dump] CLAUDE.md auto-dump scheduled (every 4h + startup)');
+}
+
+// ---------------------------------------------------------------------------
 // Main startup
 // ---------------------------------------------------------------------------
 
@@ -198,6 +306,12 @@ async function start() {
   for (const repoConfig of cfg.repos) {
     setupWatcher(repoConfig);
   }
+
+  // 5. Set up git commit watcher
+  setupGitWatcher();
+
+  // 6. Set up CLAUDE.md auto-dump
+  setupClaudeMdAutoDump();
 
   console.log('[cortex] Ready.');
 }

@@ -1,13 +1,13 @@
-# Context Cortex — System Specification
+# Context Cortex -- System Specification
 
 > This is the authoritative specification and developer context for the Context Cortex codebase.
-> It covers architecture, schema, extension patterns, and operational notes.
+> It serves as both project documentation AND Claude Code instructions.
 
 ---
 
 ## What Is Context Cortex?
 
-Context Cortex is an autonomous code intelligence system that:
+Context Cortex is a reusable code intelligence tool for Claude Code that:
 
 1. **Scans** any codebase using configurable glob patterns
 2. **Chunks** source files into semantic units (functions, classes, blocks)
@@ -17,8 +17,10 @@ Context Cortex is an autonomous code intelligence system that:
 6. **Generates** `CLAUDE.md` context files for Claude Code
 7. **Monitors** service health and snapshots results
 8. **Watches** file changes (chokidar) for incremental updates
+9. **Tracks work** via `work_log` table with git commit auto-logging and session tracking
+10. **Auto-injects context** into CLAUDE.md so every session starts informed
 
-It is designed to be repo-agnostic. Point it at any codebase and it will produce structured intelligence about that codebase.
+It is designed to be repo-agnostic. Point it at any codebase and it will produce structured intelligence.
 
 ---
 
@@ -32,7 +34,7 @@ npm install
 cp cortex.config.example.json cortex.config.json
 # Edit cortex.config.json with your DB credentials and repo paths
 
-# 3. First-time setup (schema + scan + CLAUDE.md)
+# 3. First-time setup (schema + scan + graph + health + CLAUDE.md)
 npm run setup
 ```
 
@@ -48,55 +50,55 @@ npm start
 
 ```
 context-cortex/
-├── server.js                  — Express server, cron jobs, chokidar watchers
-├── cortex.config.json         — Your config (gitignored)
-├── cortex.config.example.json — Config template
+├── server.js                  -- Express server, cron jobs, chokidar watchers
+├── cortex.config.json         -- Your config (gitignored)
+├── cortex.config.example.json -- Config template with all options documented
 │
 ├── src/
-│   ├── config.js              — Config loader + validator
+│   ├── config.js              -- Config loader + validator + env var fallback
 │   ├── db/
-│   │   ├── connection.js      — PG pool, runSchema(), externalPool(), withTransaction()
-│   │   └── schema.sql         — 6 tables in cortex schema
+│   │   ├── connection.js      -- PG pool, runSchema(), externalPool(), withTransaction()
+│   │   └── schema.sql         -- 7 tables in cortex schema (includes work_log)
 │   ├── scan/
-│   │   ├── file-walker.js     — Glob-based file discovery, language detection
-│   │   ├── chunker.js         — Semantic chunking (JS/TS/Python/SQL/Markdown)
-│   │   └── index.js           — Orchestrator: walk → chunk → upsert → embed
+│   │   ├── file-walker.js     -- Glob-based file discovery, language detection (50+ extensions)
+│   │   ├── chunker.js         -- Semantic chunking (JS/TS/Python/SQL/Markdown + fallback)
+│   │   └── index.js           -- Orchestrator: walk -> chunk -> hash -> embed -> upsert
 │   ├── check/
-│   │   └── snapshot.js        — HTTP/TCP/Docker health checks → health_snapshots
+│   │   └── snapshot.js        -- HTTP/TCP/Docker health checks -> health_snapshots
 │   ├── graph/
-│   │   └── builder.js         — Extract import/route/DB edges → graph_edges
+│   │   └── builder.js         -- Extract import/route/DB edges -> graph_edges + table_ownership
 │   ├── dump/
-│   │   └── claude-md.js       — Query DB → generate CLAUDE.md markdown
+│   │   └── claude-md.js       -- Query DB -> generate CLAUDE.md markdown (10+ sections)
 │   └── api/
-│       └── routes.js          — Express router (10 endpoints)
+│       └── routes.js          -- Express router: 10 endpoints + work-log endpoints
 │
 ├── scripts/
-│   ├── setup.js               — First-time init (schema + scan + graph + CLAUDE.md)
-│   ├── full-scan.js           — Manual scan (all repos or one)
-│   ├── reset.js               — Drop and recreate cortex schema
-│   └── health-check.js        — Run health checks (all repos or one)
+│   ├── setup.js               -- First-time init (schema + scan + graph + health + CLAUDE.md)
+│   ├── full-scan.js           -- Manual scan (all repos or one, --no-graph, --no-dump flags)
+│   ├── reset.js               -- Drop and recreate cortex schema (destructive)
+│   └── health-check.js        -- Run health checks (all repos or one, --json flag)
 │
 └── vendor/
-    └── axon/                  — Optional: Axon Python code intelligence backend
+    └── axon/                  -- Optional: Axon Python code intelligence backend
 ```
 
 ---
 
 ## Configuration Reference
 
-Configuration lives in `cortex.config.json` (gitignored). See `cortex.config.example.json` for the full template.
+Configuration lives in `cortex.config.json` (gitignored). See `cortex.config.example.json` for the full annotated template.
 
 ### Top-level fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `database` | object | yes | PostgreSQL connection config |
-| `repos` | array | yes | List of repos to scan |
+| `repos` | array | yes | List of repos to scan (each needs `name` + `path`) |
 | `ollama` | object | no | Embedding config (enabled by default) |
-| `scan` | object | no | Global scan defaults |
-| `health` | object | no | Health check schedule |
+| `scan` | object | no | Global scan defaults (overridable per-repo) |
+| `health` | object | no | Health check schedule + timeouts |
 | `context` | object | no | CLAUDE.md generation settings |
-| `server` | object | no | HTTP API settings |
+| `server` | object | no | HTTP API settings (port, host, apiKey) |
 
 ### `database`
 
@@ -108,7 +110,9 @@ Configuration lives in `cortex.config.json` (gitignored). See `cortex.config.exa
   "user": "postgres",
   "password": "secret",
   "ssl": false,
-  "max": 10
+  "max": 10,
+  "idleTimeoutMillis": 30000,
+  "connectionTimeoutMillis": 5000
 }
 ```
 
@@ -124,7 +128,7 @@ Configuration lives in `cortex.config.json` (gitignored). See `cortex.config.exa
 }
 ```
 
-Set `enabled: false` to skip embedding generation. Chunks are still stored as text — full-text search still works, but vector similarity search won't.
+Set `enabled: false` to skip embedding generation. Chunks are still stored as text. Full-text search works, but vector similarity search will not.
 
 ### `scan` (global defaults, overridable per-repo)
 
@@ -134,6 +138,7 @@ Set `enabled: false` to skip embedding generation. Chunks are still stored as te
   "chunkSizeLines": 80,
   "chunkOverlapLines": 5,
   "embedChunks": true,
+  "hashAlgorithm": "md5",
   "ignorePatterns": ["node_modules/**", ".git/**", "dist/**"],
   "includeExtensions": [".js", ".ts", ".py", ".go", ".sql", ".md"]
 }
@@ -159,9 +164,7 @@ Set `enabled: false` to skip embedding generation. Chunks are still stored as te
   "context": {
     "outputPath": "/path/to/repo/CLAUDE.md"
   },
-  "axon": {
-    "enabled": false
-  }
+  "axon": { "enabled": false }
 }
 ```
 
@@ -177,6 +180,10 @@ Set `enabled: false` to skip embedding generation. Chunks are still stored as te
 
 If `apiKey` is set, all endpoints except `/status` require `X-API-Key` header or `?api_key=` query param.
 
+### Environment variable fallback
+
+If `cortex.config.json` is missing, config is read from `CORTEX_DB_HOST`, `CORTEX_DB_PORT`, `CORTEX_DB_NAME`, `CORTEX_DB_USER`, `CORTEX_DB_PASSWORD`, `CORTEX_DB_SSL`, `CORTEX_OLLAMA_HOST`, `CORTEX_OLLAMA_MODEL`, `CORTEX_OLLAMA_ENABLED`, `CORTEX_PORT`, `CORTEX_HOST`, `CORTEX_API_KEY`.
+
 ---
 
 ## Schema Design
@@ -184,7 +191,7 @@ If `apiKey` is set, all endpoints except `/status` require `X-API-Key` header or
 All tables live in the `cortex` schema. Requires PostgreSQL 14+ and pgvector.
 
 ### `cortex.code_chunks`
-Core table. One row per semantic chunk.
+Core table. One row per semantic chunk of code.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -214,8 +221,8 @@ Directed edges in the knowledge graph.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `source_chunk_id` | bigint | FK → code_chunks |
-| `target_chunk_id` | bigint | FK → code_chunks (nullable for external refs) |
+| `source_chunk_id` | bigint | FK -> code_chunks |
+| `target_chunk_id` | bigint | FK -> code_chunks (nullable for external refs) |
 | `edge_type` | text | `import`, `route`, `db_query`, `calls`, `defines` |
 | `label` | text | Import path, route path, SQL table, etc. |
 
@@ -231,14 +238,28 @@ Point-in-time health check results.
 | `status_code` | int | HTTP status (if applicable) |
 
 ### `cortex.errors`
-Runtime errors from scan/embed/health operations. Used for observability.
+Runtime errors from scan/embed/health operations. Used for observability. Columns: repo_name, operation (`scan`/`embed`/`health`/`graph`/`dump`), file_path, message, stack, meta.
 
 ### `cortex.scan_log`
-Record of each scan run: timestamps, file counts, duration.
+Record of each scan run: repo_name, scan_type (`full`/`incremental`/`file`), status, files_scanned, chunks_upserted, chunks_deleted, errors_count, duration_ms.
 
 ### `cortex.table_ownership`
-Maps SQL table names to the repos that reference them.
-Auto-populated by `graph/builder.js` when SQL patterns are detected.
+Maps SQL table names to the repos that reference them. Auto-populated by `graph/builder.js` when SQL patterns are detected. Tracks schema_name, access_type (`readonly`/`readwrite`/`owner`), and detected_in (file paths array).
+
+### `cortex.work_log`
+Persistent log of all work done across repos. Auto-injected into CLAUDE.md so every Claude Code session starts knowing what happened before.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `repo` | text | Repository name |
+| `session_id` | text | Groups entries by work session |
+| `category` | text | `feature`, `fix`, `refactor`, `build`, `config`, `error`, `test` |
+| `summary` | text | What was done |
+| `files_touched` | text[] | Files modified |
+| `endpoints_affected` | text[] | API endpoints changed |
+| `tables_affected` | text[] | DB tables touched |
+| `status` | text | `completed`, `in_progress`, `failed`, `blocked` |
+| `commit_hash` | text | Git commit hash (unique constraint for dedup) |
 
 ---
 
@@ -259,7 +280,7 @@ Language-aware strategies:
 - **JavaScript/TypeScript**: Splits on `function`, `class`, `const`, `interface`, `type`, `enum` declarations
 - **Python**: Splits on `def` and `class` definitions
 - **SQL**: Splits on `CREATE`, `ALTER`, `INSERT`, `SELECT`, `UPDATE`, `DELETE` statements
-- **Markdown**: Splits on heading levels (h1–h4)
+- **Markdown**: Splits on heading levels (h1-h4)
 - **Other**: Fixed-size blocks (80 lines, 5-line overlap)
 
 Files smaller than `chunkSizeLines` are returned as a single `file` chunk.
@@ -284,6 +305,22 @@ Concurrency: `scan.concurrency` files processed in parallel (default: 4).
 
 ---
 
+## How the Knowledge Graph Works
+
+### Edge Extraction (`src/graph/builder.js`)
+
+Processes every chunk in a repo and detects:
+
+| Edge Type | Detection Patterns |
+|-----------|-------------------|
+| `import` | ES `import ... from`, `require()`, Python `import`/`from ... import` |
+| `route` | Express/Fastify `router.get()` etc., Flask `@app.route()`, FastAPI `@router.get()` |
+| `db_query` | SQL `FROM`, `JOIN`, `INSERT INTO`, `UPDATE`, `DELETE FROM`, `CREATE TABLE/VIEW` |
+
+Import edges link source chunk to target chunk (resolved within repo). Route edges store the route path as label. DB query edges also populate `table_ownership`.
+
+---
+
 ## How Health Checks Work
 
 ### Check types
@@ -295,16 +332,69 @@ Concurrency: `scan.concurrency` files processed in parallel (default: 4).
 | `docker` | `docker inspect <container>` | Docker containers |
 
 ### Retry logic
-
-Each check retries up to `health.retries` times (default: 2) with 500ms×attempt backoff. Only retries on failure — success stops immediately.
-
-### Snapshots
-
-Every check result is stored to `cortex.health_snapshots`. Latest per service is shown in CLAUDE.md. History is queryable via API.
+Each check retries up to `health.retries` times (default: 2) with 500ms x attempt backoff. Only retries on failure.
 
 ### Schedule
+Default: `*/15 * * * *` (every 15 minutes). Override in `health.schedule`.
 
-Default: `*/15 * * * *` (every 15 minutes). Override in `health.schedule` using node-cron syntax.
+---
+
+## CLAUDE.md Generation
+
+`src/dump/claude-md.js` queries the DB to produce sections:
+
+| Section | Source |
+|---------|--------|
+| Scan Summary | `code_chunks` aggregates |
+| Language Breakdown | `GROUP BY language` |
+| Key Files | Top N files by chunk count |
+| Key Symbols | Largest functions/classes by token estimate |
+| API Routes | `graph_edges WHERE edge_type = 'route'` |
+| Database Tables | `table_ownership` ordered by reference count |
+| External Dependencies | `graph_edges WHERE edge_type = 'import'` (external only) |
+| Knowledge Graph | Edge type counts from `graph_edges` |
+| Service Health | Latest row per service from `health_snapshots` |
+| Recent Errors | Last 10 rows from `errors` |
+
+Output path defaults to `{repo.path}/CLAUDE.md`. Override with `repos[].context.outputPath`.
+
+Regenerate on demand:
+```bash
+node scripts/full-scan.js my-api       # scan + rebuild graph + regenerate CLAUDE.md
+curl -X POST http://localhost:3131/dump/my-api  # via API
+```
+
+---
+
+## Work Log System
+
+The `work_log` table provides persistent cross-session memory for Claude Code.
+
+### What gets logged
+- **Git commits**: Auto-detected from commit history. Deduped by `commit_hash`.
+- **Session starts/ends**: Bracket work sessions with session_id for grouping.
+- **Manual entries**: Log significant changes mid-session.
+
+### How it flows into CLAUDE.md
+When CLAUDE.md is regenerated, recent work log entries (grouped by day) are injected. This gives the next Claude Code session a "Recent Work" section showing exactly what happened in the last 7 days, including commit messages, categories, and status.
+
+### Session protocol (for CLAUDE.md instructions)
+```bash
+# SESSION START
+curl -X POST http://localhost:3131/work-log/session-start \
+  -H "Content-Type: application/json" \
+  -d '{"repo":"my-api","summary":"task description"}'
+
+# LOG CHANGES
+curl -X POST http://localhost:3131/work-log \
+  -H "Content-Type: application/json" \
+  -d '{"repo":"my-api","category":"fix","summary":"what you did","files_touched":["file.js"]}'
+
+# SESSION END
+curl -X POST http://localhost:3131/work-log/session-end \
+  -H "Content-Type: application/json" \
+  -d '{"repo":"my-api","summary":"outcome","result":"completed"}'
+```
 
 ---
 
@@ -332,91 +422,51 @@ System status. No auth required.
 List all configured repos with scan stats.
 
 ### `GET /repos/:name/chunks`
-Code chunks for a repo.
-
-Query params:
-- `file` — filter by relative path (ILIKE)
-- `type` — filter by chunk_type
-- `language` — filter by language
-- `limit` — max 500 (default 50)
-- `offset` — pagination
+Code chunks for a repo. Query params: `file`, `type`, `language`, `limit` (max 500), `offset`.
 
 ### `GET /repos/:name/graph`
-Knowledge graph edges.
-
-Query params:
-- `type` — filter by edge_type (`import`, `route`, `db_query`)
-- `limit` — max 2000 (default 200)
+Knowledge graph edges. Query params: `type`, `limit` (max 2000).
 
 ### `GET /repos/:name/health`
 Latest health snapshot per service.
 
 ### `GET /search?q=term`
-Full-text search across all code chunks.
-
-Query params:
-- `q` — search term (required, min 2 chars)
-- `repo` — limit to specific repo
-- `type` — filter by chunk_type
-- `limit` — max 100 (default 20)
+Full-text search across code chunks. Query params: `q` (required, min 2 chars), `repo`, `type`, `limit` (max 100).
 
 ### `POST /scan/:name`
-Trigger a full scan + graph build for a repo. Returns immediately (fire-and-forget).
+Trigger scan + graph build (fire-and-forget).
 
 ### `POST /health/:name`
-Trigger health checks for a repo. Returns results synchronously.
+Trigger health checks (synchronous).
 
 ### `POST /dump/:name`
-Generate and write CLAUDE.md for a repo. Returns output path.
+Generate and write CLAUDE.md.
 
----
+### `POST /work-log`
+Log a work entry. Body: `{repo, category, summary, files_touched, status}`.
 
-## CLAUDE.md Generation Logic
+### `POST /work-log/session-start`
+Start a session. Body: `{repo, summary}`. Returns `session_id`.
 
-`src/dump/claude-md.js` queries the DB to produce sections:
+### `POST /work-log/session-end`
+End a session. Body: `{repo, summary, result}`.
 
-| Section | Source |
-|---------|--------|
-| Scan Summary | `code_chunks` aggregates |
-| Language Breakdown | `GROUP BY language` |
-| Key Files | Top N files by chunk count |
-| Key Symbols | Largest functions/classes by token estimate |
-| API Routes | `graph_edges WHERE edge_type = 'route'` |
-| Database Tables | `table_ownership` ordered by reference count |
-| External Dependencies | `graph_edges WHERE edge_type = 'import'` (external only) |
-| Knowledge Graph | Edge type counts from `graph_edges` |
-| Service Health | Latest row per service from `health_snapshots` |
-| Recent Errors | Last 10 rows from `errors` |
-
-The output file path defaults to `{repo.path}/CLAUDE.md`. Override with `repos[].context.outputPath`.
-
-Regenerate on demand:
-```bash
-node scripts/full-scan.js my-api       # scan + rebuild graph + regenerate CLAUDE.md
-curl -X POST http://localhost:3131/dump/my-api  # via API
-```
+### `GET /work-log/compact`
+Recent work log in compact format for context injection.
 
 ---
 
 ## Axon Integration (Optional Python Backend)
 
-[Axon](https://github.com/context-cortex/axon-main) is a Python code intelligence engine that provides deeper AST-level analysis than the regex-based chunker.
+[Axon](https://github.com/context-cortex/axon-main) provides AST-level code analysis as an alternative to the regex chunker.
 
 ### Setup
-
-Axon is shipped as a git submodule / vendor copy at `vendor/axon/`.
-
 ```bash
-# Copy Axon into vendor
 cp -r /path/to/axon-main ./vendor/axon
-
-# Install Axon dependencies
 cd vendor/axon && pip install -e .
 ```
 
-### Configuration
-
-Per-repo:
+### Configuration (per-repo)
 ```json
 {
   "axon": {
@@ -427,114 +477,70 @@ Per-repo:
 }
 ```
 
-### How it works
-
-When `axon.enabled = true`, the scanner calls Axon as a subprocess:
+When enabled, the scanner calls Axon as a subprocess:
 ```
 python vendor/axon/src/axon/cli.py scan --path /repo --format json
 ```
 
-Axon outputs JSON with AST-level chunks (accurate function boundaries, docstrings, parameter lists). The scanner uses this output instead of the regex chunker for that repo.
-
-### Fallback
-
-If Axon fails or is unavailable, the scanner falls back to the regex chunker automatically.
+Axon outputs JSON with AST-level chunks (accurate function boundaries, docstrings, parameter lists). Falls back to regex chunker if Axon fails.
 
 ---
 
-## Environment Variables (Alternative to config file)
-
-If `cortex.config.json` is not present, these env vars are used:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CORTEX_DB_HOST` | localhost | PostgreSQL host |
-| `CORTEX_DB_PORT` | 5432 | PostgreSQL port |
-| `CORTEX_DB_NAME` | postgres | Database name |
-| `CORTEX_DB_USER` | postgres | Database user |
-| `CORTEX_DB_PASSWORD` | (empty) | Database password |
-| `CORTEX_DB_SSL` | false | Enable SSL |
-| `CORTEX_OLLAMA_HOST` | http://localhost:11434 | Ollama host |
-| `CORTEX_OLLAMA_MODEL` | nomic-embed-text | Embedding model |
-| `CORTEX_OLLAMA_ENABLED` | true | Enable embeddings |
-| `CORTEX_PORT` | 3131 | API server port |
-| `CORTEX_HOST` | localhost | API server host |
-| `CORTEX_API_KEY` | (empty) | API auth key |
-
----
-
-## Build Order (35 steps for extending)
-
-Follow this order when extending Context Cortex:
+## Build Order (for extending)
 
 ### Database changes
-1. Edit `src/db/schema.sql` — add tables, columns, or indexes
+1. Edit `src/db/schema.sql` -- add tables, columns, or indexes
 2. Run `npm run reset` to apply (dev) or write a migration script (prod)
 
 ### New language support in chunker
 3. Add extension to `EXT_TO_LANGUAGE` map in `src/scan/file-walker.js`
 4. Add regex pattern set to `PATTERNS` in `src/scan/chunker.js`
-5. Add language alias if needed (e.g. `PATTERNS.jsx = PATTERNS.javascript`)
-6. Test: `node -e "import('./src/scan/chunker.js').then(m => console.log(m.chunkFile('test.rb', 'ruby', {})))"`
+5. Add language alias if needed (e.g., `PATTERNS.jsx = PATTERNS.javascript`)
 
 ### New graph edge type
-7. Define regex patterns in `src/graph/builder.js`
-8. Add extractor function following the `extractImports` / `extractRoutes` pattern
-9. Call new extractor in `processChunk()`
-10. Add new `edge_type` value to `graph_edges` — no schema change needed (text column)
-11. Add aggregation to `getGraphStats()` in `src/dump/claude-md.js`
-12. Add display section in `generateClaudeMd()` in `src/dump/claude-md.js`
+6. Define regex patterns in `src/graph/builder.js`
+7. Add extractor function following the `extractImports` / `extractRoutes` pattern
+8. Call new extractor in `processChunk()`
+9. Add aggregation to `getGraphStats()` in `src/dump/claude-md.js`
+10. Add display section in `generateClaudeMd()`
 
 ### New health check type
-13. Add handler function in `src/check/snapshot.js` following `checkHttp` / `checkTcp` pattern
-14. Add case to the `switch (type)` in `checkService()`
-15. Document new type in `cortex.config.example.json`
+11. Add handler function in `src/check/snapshot.js` following `checkHttp` / `checkTcp` pattern
+12. Add case to the `switch (type)` in `checkService()`
 
 ### New API endpoint
-16. Add route handler in `src/api/routes.js`
-17. Use `asyncHandler()` wrapper for async routes
-18. Use `requireAuth` middleware for protected endpoints
-19. Return consistent JSON shapes
+13. Add route handler in `src/api/routes.js`
+14. Use `asyncHandler()` wrapper for async routes
+15. Use `requireAuth` middleware for protected endpoints
 
 ### New scan option
-20. Add field to `defaultScanConfig()` in `src/config.js`
-21. Document in `cortex.config.example.json`
-22. Consume in `src/scan/index.js` or `src/scan/chunker.js`
-
-### Axon integration (deeper AST analysis)
-23. Implement `vendor/axon/` subprocess call in `src/scan/index.js`
-24. Parse JSON output from Axon CLI
-25. Map Axon's chunk format to the `code_chunks` schema
-26. Handle subprocess failures with fallback to regex chunker
+16. Add field to `defaultScanConfig()` in `src/config.js`
+17. Document in `cortex.config.example.json`
+18. Consume in `src/scan/index.js` or `src/scan/chunker.js`
 
 ### CLAUDE.md customization
-27. Add new query function in `src/dump/claude-md.js`
-28. Call in the `Promise.all` array in `generateClaudeMd()`
-29. Add markdown section building to `generateClaudeMd()`
-
-### New script
-30. Create in `scripts/` following existing patterns
-31. Import `dotenv/config` at top
-32. Load config with `getConfig()`
-33. Call `closePool()` before `process.exit()`
+19. Add new query function in `src/dump/claude-md.js`
+20. Call in the `Promise.all` array in `generateClaudeMd()`
+21. Add markdown section builder
 
 ### Adding a new repo
-34. Add entry to `repos[]` in `cortex.config.json`
-35. Run `node scripts/full-scan.js my-new-repo` to scan immediately
+22. Add entry to `repos[]` in `cortex.config.json`
+23. Run `node scripts/full-scan.js my-new-repo` to scan immediately
 
 ---
 
 ## Key Conventions
 
-- **ES modules everywhere** (`type: module` in package.json). Use `.js` extensions in all imports.
+- **ES modules everywhere** (`"type": "module"` in package.json). Use `.js` extensions in all imports.
 - **Windows path safety**: Use `path.join()` everywhere. Never hardcode `/` separators.
+- **Relative paths use forward slashes**: Normalize with `.replace(/\\/g, '/')` on Windows.
 - **No hardcoded data**: Return null/empty arrays, not fake fallback values.
-- **Error logging**: Use `logError()` from `db/connection.js` for non-fatal errors (scan failures, embed failures). Don't throw — continue with other files.
+- **Error logging**: Use `logError()` from `db/connection.js` for non-fatal errors. Do not throw -- continue with other files.
 - **Pool management**: Scripts must call `closePool()` before `process.exit()`.
 - **Embeddings are nullable**: Always check for null embedding. Full-text search works without them.
 - **content_hash deduplication**: If `content_hash` is unchanged and embedding exists, skip upsert. Saves DB writes and Ollama calls.
-- **Relative paths use forward slashes**: Normalize with `.replace(/\\/g, '/')` on Windows.
 - **Cron validation**: Always call `cron.validate(schedule)` before scheduling.
+- **Config comments**: Keys starting with `_` (like `_comment`, `_readme`) are stripped during config loading.
 
 ---
 
@@ -546,13 +552,13 @@ Follow this order when extending Context Cortex:
 
 ### IVFFlat index requires data before creation
 - Symptom: `CREATE INDEX USING ivfflat` fails on empty table
-- Solution: The index creation in `schema.sql` uses `IF NOT EXISTS` and will succeed on empty tables. IVFFlat needs `VACUUM ANALYZE cortex.code_chunks` after first data load for optimal performance.
+- Solution: The index creation in `schema.sql` uses `IF NOT EXISTS` and will succeed on empty tables. Run `VACUUM ANALYZE cortex.code_chunks` after first data load for optimal performance.
 
 ### Windows glob patterns
 - Symptom: Paths returned with backslashes break `relative_path` uniqueness
 - Solution: `file-walker.js` normalizes all paths with `.replace(/\\/g, '/')`
 
-### Chokidar on Windows requires polling for network drives
+### Chokidar on Windows with network drives
 - Symptom: File changes on network drives not detected
 - Solution: Set `usePolling: true` in the chokidar config in `server.js`
 
@@ -560,7 +566,7 @@ Follow this order when extending Context Cortex:
 - Symptom: Initial scan takes very long
 - Solution: Increase `concurrency`, narrow `includeExtensions`, add more `ignorePatterns`
 
-### Ollama timeout on large files
+### Ollama timeout on large chunks
 - Symptom: Embedding fails with AbortError for very large chunks
 - Solution: Increase `ollama.timeoutMs`, or reduce `chunkSizeLines` to produce smaller chunks
 
@@ -591,7 +597,7 @@ node scripts/health-check.js --json
 
 # Reset schema (WARNING: deletes all data)
 npm run reset
-node scripts/reset.js --force  # skip confirmation
+node scripts/reset.js --force
 
 # Start server
 npm start
@@ -608,8 +614,8 @@ curl -X POST http://localhost:3131/dump/my-api
 
 ## Services
 
-| Component | Default | Notes |
-|-----------|---------|-------|
-| HTTP API | :3131 | Express, configurable |
-| PostgreSQL | :5432 | cortex schema |
-| Ollama | :11434 | nomic-embed-text |
+| Component | Default Port | Notes |
+|-----------|-------------|-------|
+| HTTP API | 3131 | Express, configurable via `server.port` |
+| PostgreSQL | 5432 | cortex schema, 7 tables |
+| Ollama | 11434 | nomic-embed-text (768 dims) |

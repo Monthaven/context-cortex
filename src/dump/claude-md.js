@@ -2,14 +2,169 @@
  * src/dump/claude-md.js
  * Generates CLAUDE.md context files for repositories.
  *
- * Queries code_chunks, graph_edges, health_snapshots, and table_ownership
- * to produce a comprehensive, up-to-date CLAUDE.md for each repo.
+ * Queries code_chunks, graph_edges, health_snapshots, table_ownership,
+ * and work_log to produce a comprehensive, up-to-date CLAUDE.md for each repo.
+ *
+ * Features:
+ *   - mergeIntoClaude() — inject between <!-- cortex-context-start/end --> markers
+ *   - .cortex.CLAUDE.md backup alongside the primary CLAUDE.md
+ *   - getCompactWorkLog() — work-log entries grouped by date/repo
+ *   - sessionProtocol() — curl commands for session start/end
+ *   - Top-N files by chunk count
+ *   - Service health, graph stats, recent errors
  */
 
-import { writeFileSync, mkdirSync } from 'fs';
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { queryRows, queryOne } from '../db/connection.js';
 import { getConfig, getRepoConfig } from '../config.js';
+
+// ---------------------------------------------------------------------------
+// Markers for CLAUDE.md injection
+// ---------------------------------------------------------------------------
+
+const MARKER_START = '<!-- cortex-context-start -->';
+const MARKER_END   = '<!-- cortex-context-end -->';
+
+/**
+ * Merge cortex content into an existing CLAUDE.md.
+ * Replaces between markers if present; otherwise appends.
+ */
+function mergeIntoClaude(existingPath, cortexContent, apiKey, port) {
+  const refreshCmd = `curl -s -X POST http://localhost:${port}/dump/claude-md -H "X-API-Key: ${apiKey}"`;
+  const block = `
+${MARKER_START}
+<!-- Auto-injected by context-cortex. Regenerated every 4 hours or on demand. -->
+<!-- To refresh: ${refreshCmd} -->
+
+${cortexContent}
+
+${MARKER_END}`;
+
+  let existing = '';
+  if (existsSync(existingPath)) {
+    existing = readFileSync(existingPath, 'utf8');
+  }
+
+  const startIdx = existing.indexOf(MARKER_START);
+  const endIdx   = existing.indexOf(MARKER_END);
+
+  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+    // Replace between markers
+    return existing.slice(0, startIdx).trimEnd() + block + '\n';
+  }
+  // Append
+  return (existing.trimEnd() + '\n' + block + '\n');
+}
+
+// ---------------------------------------------------------------------------
+// Work Log helpers
+// ---------------------------------------------------------------------------
+
+function pgEscMd(str) {
+  if (!str) return 'NULL';
+  return `'${String(str).replace(/'/g, "''")}'`;
+}
+
+/**
+ * Fetch compact work log markdown for injection into CLAUDE.md.
+ * @param {string|null} repo  — if null, returns all repos
+ * @param {number} days
+ */
+async function getCompactWorkLog(repo, days = 7) {
+  try {
+    let where = `occurred_at > NOW() - INTERVAL '${days} days'`;
+    if (repo) where += ` AND repo = ${pgEscMd(repo)}`;
+
+    const entries = await queryRows(`
+      SELECT repo, occurred_at, category, summary, status, result, commit_hash
+      FROM cortex.work_log
+      WHERE ${where}
+      ORDER BY occurred_at DESC
+      LIMIT 150
+    `);
+
+    const inProgress = await queryRows(
+      `SELECT repo, occurred_at, category, summary, result
+       FROM cortex.work_log WHERE status = 'in_progress' ORDER BY occurred_at DESC LIMIT 10`
+    );
+
+    if (entries.length === 0 && inProgress.length === 0) {
+      return '_No work logged yet. POST /work-log to start tracking._';
+    }
+
+    const now = new Date();
+    const todayStr     = now.toISOString().slice(0, 10);
+    const yesterdayStr = new Date(now - 86400000).toISOString().slice(0, 10);
+
+    const byDate = {};
+    for (const e of entries) {
+      if (e.status === 'in_progress') continue;
+      const d = new Date(e.occurred_at).toISOString().slice(0, 10);
+      if (!byDate[d]) byDate[d] = {};
+      if (!byDate[d][e.repo]) byDate[d][e.repo] = [];
+      byDate[d][e.repo].push(e);
+    }
+
+    const lines = [];
+    const MAX = 45;
+    for (const date of Object.keys(byDate).sort().reverse()) {
+      if (lines.length >= MAX - 4) break;
+      const label = date === todayStr ? `### ${date} (today)`
+        : date === yesterdayStr ? `### ${date} (yesterday)`
+        : `### ${date}`;
+      lines.push(label);
+      for (const [rName, rEntries] of Object.entries(byDate[date])) {
+        if (lines.length >= MAX - 2) break;
+        if (!repo) lines.push(`**${rName}:**`);
+        for (const e of rEntries) {
+          if (lines.length >= MAX - 1) break;
+          const hash = e.commit_hash ? ` (${String(e.commit_hash).slice(0, 7)})` : '';
+          const outcome = e.result ? ` → ${e.result}` : '';
+          lines.push(`- [${e.category}] ${e.summary}${outcome}${hash}`);
+        }
+      }
+      lines.push('');
+    }
+
+    if (inProgress.length > 0) {
+      lines.push('### In Progress');
+      for (const e of inProgress.slice(0, 6)) {
+        const detail = e.result ? ` — ${e.result}` : '';
+        lines.push(`- [${e.category}${!repo ? '/' + e.repo : ''}] ${e.summary}${detail}`);
+      }
+    }
+
+    return lines.join('\n');
+  } catch (err) {
+    return `_Work log unavailable: ${err.message}_`;
+  }
+}
+
+/**
+ * Build the session protocol block for a repo's CLAUDE.md.
+ */
+function sessionProtocol(repoName, apiKey, port) {
+  const key = apiKey || 'YOUR_API_KEY';
+  const base = `http://localhost:${port}`;
+  return `\`\`\`bash
+# SESSION START — run this first every time you start work
+curl -s -X POST ${base}/work-log/session-start \\
+  -H "X-API-Key: ${key}" -H "Content-Type: application/json" \\
+  -d '{"repo":"${repoName}","summary":"DESCRIBE_YOUR_TASK_HERE"}'
+
+# LOG SIGNIFICANT CHANGES as you work
+curl -s -X POST ${base}/work-log \\
+  -H "X-API-Key: ${key}" -H "Content-Type: application/json" \\
+  -d '{"repo":"${repoName}","category":"build","summary":"WHAT_YOU_DID","files_touched":["file.js"],"status":"completed"}'
+
+# SESSION END — run when done
+curl -s -X POST ${base}/work-log/session-end \\
+  -H "X-API-Key: ${key}" -H "Content-Type: application/json" \\
+  -d '{"repo":"${repoName}","summary":"WHAT_YOU_DID","result":"OUTCOME"}'
+\`\`\`
+_Note: Replace YOUR_API_KEY with the CORTEX_API_KEY env var._`;
+}
 
 // ---------------------------------------------------------------------------
 // Query helpers
@@ -184,6 +339,8 @@ export async function generateClaudeMd(repoConfig) {
   const cfg = getConfig();
   const { name, description, path: repoPath, language } = repoConfig;
   const contextCfg = repoConfig.context;
+  const port   = cfg.server?.port || 3131;
+  const apiKey = cfg.server?.apiKey || '';
 
   const [
     stats,
@@ -197,6 +354,8 @@ export async function generateClaudeMd(repoConfig) {
     keyFunctions,
     graphStats,
     lastScan,
+    recentWork,
+    allWork,
   ] = await Promise.all([
     getChunkStats(name),
     getTopFiles(name, contextCfg.maxChunksInSummary || 20),
@@ -209,6 +368,8 @@ export async function generateClaudeMd(repoConfig) {
     getKeyFunctions(name, 30),
     contextCfg.includeGraphSummary ? getGraphStats(name) : Promise.resolve(null),
     getLastScanLog(name),
+    getCompactWorkLog(name, 7),
+    getCompactWorkLog(null, 3),
   ]);
 
   const lines = [];
@@ -220,7 +381,7 @@ export async function generateClaudeMd(repoConfig) {
   lines.push(`# ${name} — Code Context`);
   lines.push('');
   lines.push(`> Auto-generated by [Context Cortex](https://github.com/context-cortex/context-cortex) on ${now}.`);
-  lines.push('> Do not edit manually — regenerate with: `node scripts/full-scan.js`');
+  lines.push('> Do not edit manually — regenerated every 4 hours or on demand.');
   lines.push('');
 
   if (description) {
@@ -230,6 +391,24 @@ export async function generateClaudeMd(repoConfig) {
 
   lines.push(`**Repository path:** \`${repoPath}\``);
   if (language) lines.push(`**Primary language:** ${language}`);
+  lines.push('');
+
+  // ---------------------------------------------------------------------------
+  // Session Protocol
+  // ---------------------------------------------------------------------------
+  lines.push('## Session Protocol');
+  lines.push(sessionProtocol(name, apiKey, port));
+  lines.push('');
+
+  // ---------------------------------------------------------------------------
+  // Recent Work
+  // ---------------------------------------------------------------------------
+  lines.push(`## Recent Work — ${name} (last 7 days)`);
+  lines.push(recentWork);
+  lines.push('');
+
+  lines.push('## System-Wide Recent Work (last 3 days)');
+  lines.push(allWork);
   lines.push('');
 
   // ---------------------------------------------------------------------------
@@ -407,6 +586,8 @@ export async function generateClaudeMd(repoConfig) {
   // ---------------------------------------------------------------------------
   lines.push('---');
   lines.push('');
+  lines.push(`_Cortex API: http://localhost:${port} | Work log: GET http://localhost:${port}/work-log/compact_`);
+  lines.push('');
   lines.push('*This file is auto-generated. Source: [Context Cortex](https://github.com/context-cortex/context-cortex)*');
   lines.push('');
 
@@ -414,9 +595,9 @@ export async function generateClaudeMd(repoConfig) {
 }
 
 /**
- * Generate and write CLAUDE.md for a repository.
- * Writes to the path specified in repoConfig.context.outputPath,
- * or falls back to repoConfig.path/CLAUDE.md.
+ * Generate and write CLAUDE.md for a single repository.
+ * Injects cortex content between markers in the existing CLAUDE.md.
+ * Also writes a standalone .cortex.CLAUDE.md as backup.
  *
  * @param {object|string} repoConfigOrName - Repo config object or repo name string
  * @returns {Promise<string>} Path to written file
@@ -427,18 +608,66 @@ export async function writeClaudeMd(repoConfigOrName) {
     ? getRepoConfig(repoConfigOrName)
     : repoConfigOrName;
 
-  const { name, path: repoPath, context: contextCfg } = repoConfig;
-  const outputPath = contextCfg?.outputPath
-    || join(repoPath, contextCfg?.outputFileName || 'CLAUDE.md');
+  const { name, path: repoPath } = repoConfig;
+  const apiKey = cfg.server?.apiKey || '';
+  const port   = cfg.server?.port || 3131;
 
   console.log(`[cortex:dump] Generating CLAUDE.md for ${name}...`);
 
   const content = await generateClaudeMd(repoConfig);
 
-  // Ensure directory exists
-  mkdirSync(dirname(outputPath), { recursive: true });
-  writeFileSync(outputPath, content, 'utf8');
+  // 1. Backup: write standalone .cortex.CLAUDE.md
+  const backupPath = join(repoPath, '.cortex.CLAUDE.md');
+  mkdirSync(dirname(backupPath), { recursive: true });
+  writeFileSync(backupPath, content, 'utf8');
 
-  console.log(`[cortex:dump] Wrote ${content.length} bytes to: ${outputPath}`);
-  return outputPath;
+  // 2. Primary: inject/update cortex section in CLAUDE.md
+  const claudePath = join(repoPath, 'CLAUDE.md');
+  const merged = mergeIntoClaude(claudePath, content, apiKey, port);
+  writeFileSync(claudePath, merged, 'utf8');
+
+  console.log(`[cortex:dump] Injected into ${claudePath}`);
+  return claudePath;
+}
+
+/**
+ * Dump CLAUDE.md for all configured repos.
+ * Called by auto-dump timer and the /dump/claude-md endpoint.
+ *
+ * @param {object} [opts]
+ * @param {boolean} [opts.dryRun] - Return content without writing files
+ * @returns {Promise<{ written: string[], content: Record<string, string> }>}
+ */
+export async function dumpClaudeMd(opts = {}) {
+  const cfg = getConfig();
+  const written = [];
+  const content = {};
+
+  for (const repo of cfg.repos) {
+    try {
+      const md = await generateClaudeMd(repo);
+      content[repo.name] = md;
+
+      if (!opts.dryRun) {
+        const apiKey = cfg.server?.apiKey || '';
+        const port   = cfg.server?.port || 3131;
+
+        // Backup: write standalone .cortex.CLAUDE.md
+        const backupPath = join(repo.path, '.cortex.CLAUDE.md');
+        mkdirSync(dirname(backupPath), { recursive: true });
+        writeFileSync(backupPath, md, 'utf8');
+
+        // Primary: inject/update cortex section in CLAUDE.md
+        const claudePath = join(repo.path, 'CLAUDE.md');
+        const merged = mergeIntoClaude(claudePath, md, apiKey, port);
+        writeFileSync(claudePath, merged, 'utf8');
+        written.push(claudePath);
+        console.log(`[cortex:dump] Injected into ${claudePath}`);
+      }
+    } catch (err) {
+      console.error(`[cortex:dump] Failed for ${repo.name}: ${err.message}`);
+    }
+  }
+
+  return { written, content };
 }

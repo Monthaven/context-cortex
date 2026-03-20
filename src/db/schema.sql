@@ -200,3 +200,46 @@ CREATE INDEX IF NOT EXISTS table_ownership_repo_idx
 CREATE OR REPLACE TRIGGER table_ownership_updated_at
     BEFORE UPDATE ON cortex.table_ownership
     FOR EACH ROW EXECUTE FUNCTION cortex.set_updated_at();
+
+-- ---------------------------------------------------------------------------
+-- 7. work_log
+-- Persistent log of all work done across repos. Auto-injected into CLAUDE.md
+-- so every Claude Code session starts knowing exactly what happened before.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS cortex.work_log (
+    id                  BIGSERIAL PRIMARY KEY,
+    repo                TEXT        NOT NULL,
+    session_id          TEXT,
+    occurred_at         TIMESTAMPTZ DEFAULT NOW(),
+    category            TEXT        NOT NULL DEFAULT 'build',
+    summary             TEXT        NOT NULL,
+    details             TEXT,
+    files_touched       TEXT[]      DEFAULT '{}',
+    endpoints_affected  TEXT[]      DEFAULT '{}',
+    tables_affected     TEXT[]      DEFAULT '{}',
+    status              TEXT        NOT NULL DEFAULT 'completed',
+    result              TEXT,
+    commit_hash         TEXT,
+    duration_minutes    INT,
+    tags                TEXT[]      DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS work_log_repo_idx
+    ON cortex.work_log (repo);
+
+CREATE INDEX IF NOT EXISTS work_log_occurred_at_idx
+    ON cortex.work_log (occurred_at DESC);
+
+CREATE INDEX IF NOT EXISTS work_log_session_id_idx
+    ON cortex.work_log (session_id);
+
+CREATE INDEX IF NOT EXISTS work_log_status_idx
+    ON cortex.work_log (status);
+
+CREATE INDEX IF NOT EXISTS work_log_category_idx
+    ON cortex.work_log (category);
+
+-- Dedup: only one entry per commit hash
+CREATE UNIQUE INDEX IF NOT EXISTS work_log_commit_hash_idx
+    ON cortex.work_log (commit_hash)
+    WHERE commit_hash IS NOT NULL;

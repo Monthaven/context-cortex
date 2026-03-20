@@ -9,7 +9,9 @@
     "setup": "node scripts/setup.js",
     "scan": "node scripts/full-scan.js",
     "reset": "node scripts/reset.js",
-    "health": "node scripts/health-check.js"
+    "health": "node scripts/health-check.js",
+    "embed": "node scripts/embed-backfill.js",
+    "backfill": "node scripts/backfill-metadata.js"
   },
   "dependencies": {
     "express": "^4.21.0",

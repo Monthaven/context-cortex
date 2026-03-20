@@ -241,6 +241,38 @@ End a work session. Accepts `session_id`, `summary`, and `result`.
 #### `GET /work-log/compact`
 Get recent work log entries in a compact format for context injection.
 
+#### `POST /work-log/scan-commits`
+Backfill work log from git history. Body: `{ "days": 14 }`.
+
+#### `PATCH /work-log/:id`
+Update a work log entry (status, result).
+
+### Extended Intelligence
+
+#### `GET /ext/status`
+System overview: chunk count, graph edges, embedding coverage, health, recent errors.
+
+#### `GET /ext/search?q=term`
+Semantic vector search (requires embeddings). Falls back to ILIKE if no embeddings.
+
+#### `GET /ext/topology`
+Dependency graph visualization data — repos, databases, services, cross-repo edges.
+
+#### `GET /ext/context?paths=src/auth.js,src/db.js`
+Task-relevant context for specific files. Depth: `light` (default), `medium`, `deep`.
+
+#### `GET /ext/errors`
+Error log with optional `?operation=` and `?repo=` filters.
+
+#### `POST /ext/errors`
+Log an error. Body: `{ "operation": "scan", "repo": "my-api", "message": "..." }`.
+
+#### `POST /ext/errors/:id/resolve`
+Resolve (delete) an error entry.
+
+#### `POST /dump/claude-md`
+Regenerate CLAUDE.md for all repos. Supports `?dryRun=true`.
+
 ## Architecture
 
 ### Pipeline: Scan, Chunk, Embed, Graph

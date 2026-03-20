@@ -119,6 +119,18 @@
         }
       },
 
+      "entryPoints": ["src/server.js", "src/index.js"],
+
+      "databases": [
+        {
+          "name": "Primary",
+          "host": "localhost",
+          "port": 5432,
+          "database": "my_api",
+          "purpose": "Main application database"
+        }
+      ],
+
       "context": {
         "_comment": "Where to write the generated CLAUDE.md file for this repo.",
         "outputPath": "/absolute/path/to/my-api/CLAUDE.md"

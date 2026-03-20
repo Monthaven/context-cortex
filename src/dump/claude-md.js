@@ -435,6 +435,34 @@ export async function generateClaudeMd(repoConfig) {
   lines.push('');
 
   // ---------------------------------------------------------------------------
+  // Entry Points
+  // ---------------------------------------------------------------------------
+  const entryPoints = repoConfig.entryPoints || [];
+  if (entryPoints.length > 0) {
+    lines.push('## Entry Points');
+    lines.push('');
+    for (const ep of entryPoints) {
+      lines.push(`- \`${ep}\``);
+    }
+    lines.push('');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Database Connections (from repo config)
+  // ---------------------------------------------------------------------------
+  const databases = repoConfig.databases || [];
+  if (databases.length > 0) {
+    lines.push('## Database Connections');
+    lines.push('');
+    lines.push('| Name | Host | Port | Database | Purpose |');
+    lines.push('|------|------|------|----------|---------|');
+    for (const db of databases) {
+      lines.push(`| ${db.name || '—'} | ${db.host || 'localhost'} | ${db.port || '—'} | ${db.database || '—'} | ${db.purpose || '—'} |`);
+    }
+    lines.push('');
+  }
+
+  // ---------------------------------------------------------------------------
   // Language breakdown
   // ---------------------------------------------------------------------------
   if (languages.length > 0) {
